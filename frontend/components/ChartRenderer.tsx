@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useRef } from "react";
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -15,8 +15,10 @@ import {
   Filler,
 } from "chart.js";
 import { Line, Bar, Pie, Doughnut } from "react-chartjs-2";
-import { Box, Typography, Paper, useTheme } from "@mui/material";
+import { Box, Typography, Paper, useTheme, IconButton, Tooltip as MuiTooltip } from "@mui/material";
 import { motion } from "framer-motion";
+import html2canvas from "html2canvas";
+import DownloadIcon from "@mui/icons-material/Download";
 
 ChartJS.register(
   CategoryScale,
@@ -54,6 +56,7 @@ export interface ChartData {
 
 interface ChartRendererProps {
   data: ChartData;
+  showExportButton?: boolean;
 }
 
 const CHART_COLORS = {
@@ -79,10 +82,27 @@ const CHART_COLORS = {
   ],
 };
 
-export default function ChartRenderer({ data }: ChartRendererProps) {
+export default function ChartRenderer({ data, showExportButton = true }: ChartRendererProps) {
   const theme = useTheme();
   const isDark = theme.palette.mode === "dark";
   const colors = isDark ? CHART_COLORS.dark : CHART_COLORS.light;
+  const chartRef = useRef<HTMLDivElement>(null);
+
+  const handleExport = async () => {
+    if (!chartRef.current) return;
+    try {
+      const canvas = await html2canvas(chartRef.current, {
+        backgroundColor: isDark ? "#1e293b" : "#ffffff",
+        scale: 2,
+      });
+      const link = document.createElement("a");
+      link.download = `${data.title.replace(/\s+/g, "-").toLowerCase()}-chart.jpeg`;
+      link.href = canvas.toDataURL("image/jpeg", 0.9);
+      link.click();
+    } catch (error) {
+      console.error("Export failed:", error);
+    }
+  };
 
   const chartOptions = {
     responsive: true,
@@ -355,17 +375,25 @@ export default function ChartRenderer({ data }: ChartRendererProps) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
     >
-      <Box>
-        <Typography
-          variant="h6"
-          sx={{
-            fontWeight: 600,
-            mb: 2,
-            color: "text.primary",
-          }}
-        >
-          {data.title}
-        </Typography>
+      <Box ref={chartRef} sx={{ p: showExportButton ? 2 : 0, borderRadius: 2, backgroundColor: showExportButton ? "background.paper" : "transparent" }}>
+        <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2 }}>
+          <Typography
+            variant="h6"
+            sx={{
+              fontWeight: 600,
+              color: "text.primary",
+            }}
+          >
+            {data.title}
+          </Typography>
+          {showExportButton && (
+            <MuiTooltip title="Export as JPEG">
+              <IconButton onClick={handleExport} size="small" sx={{ color: "text.secondary" }}>
+                <DownloadIcon />
+              </IconButton>
+            </MuiTooltip>
+          )}
+        </Box>
 
         {renderChart()}
 
