@@ -119,7 +119,7 @@ export default function ChartRenderer({ data, showExportButton = true }: ChartRe
           usePointStyle: true,
           padding: 16,
           font: {
-            family: "'Inter', sans-serif",
+            family: "'Poppins', sans-serif",
             size: 12,
           },
         },
@@ -145,7 +145,7 @@ export default function ChartRenderer({ data, showExportButton = true }: ChartRe
         ticks: {
           color: isDark ? "#94a3b8" : "#64748b",
           font: {
-            family: "'Inter', sans-serif",
+            family: "'Poppins', sans-serif",
             size: 11,
           },
         },
@@ -158,7 +158,7 @@ export default function ChartRenderer({ data, showExportButton = true }: ChartRe
         ticks: {
           color: isDark ? "#94a3b8" : "#64748b",
           font: {
-            family: "'Inter', sans-serif",
+            family: "'Poppins', sans-serif",
             size: 11,
           },
         },
@@ -386,18 +386,18 @@ export default function ChartRenderer({ data, showExportButton = true }: ChartRe
           >
             {data.title}
           </Typography>
-          {showExportButton && (
+          {showExportButton ? (
             <MuiTooltip title="Export as JPEG">
               <IconButton onClick={handleExport} size="small" sx={{ color: "text.secondary" }}>
                 <DownloadIcon />
               </IconButton>
             </MuiTooltip>
-          )}
+          ) : null}
         </Box>
 
         {renderChart()}
 
-        {data.insight && (
+        {data.insight ? (
           <Paper
             elevation={0}
             sx={{
@@ -418,7 +418,7 @@ export default function ChartRenderer({ data, showExportButton = true }: ChartRe
               {data.insight}
             </Typography>
           </Paper>
-        )}
+        ) : null}
       </Box>
     </motion.div>
   );

@@ -1,6 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
+import dynamic from "next/dynamic";
+import useSWR, { mutate } from "swr";
 import {
   Box,
   Container,
@@ -21,33 +23,140 @@ import BarChartIcon from "@mui/icons-material/BarChart";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import Header from "../components/Header";
 import Chatbot from "../components/Chatbot/Chatbot";
-import ChartRenderer, { ChartData } from "../components/ChartRenderer";
+
+interface ChartData {
+  chartType: string;
+  title: string;
+  xAxis?: { label: string; data: string[] | number[] };
+  yAxis?: { label: string };
+  series?: Array<{ name: string; data: number[] }>;
+  data?: Array<{ name: string; value: number }>;
+  columns?: string[];
+  rows?: string[][];
+  insight: string;
+  error?: string;
+}
+
+const ChartRenderer = dynamic(() => import("../components/ChartRenderer"), {
+  ssr: false,
+  loading: () => (
+    <Paper
+      sx={{
+        p: 3,
+        backgroundColor: "background.paper",
+        borderRadius: 3,
+        minHeight: 500,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Typography color="text.secondary">Loading chart...</Typography>
+    </Paper>
+  ),
+});
 
 const MOCK_CHART: ChartData = {
-  chartType: "line",
-  title: "Monthly Revenue Trend",
+  chartType: "bar",
+  title: "Batch Release Status by Line",
   xAxis: {
-    label: "Month",
-    data: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+    label: "Production Line",
+    data: ["Line A", "Line B", "Line C"],
   },
   yAxis: {
-    label: "Revenue",
+    label: "Batches",
   },
   series: [
     {
-      name: "Revenue",
-      data: [120000, 135000, 150000, 142000, 165000, 180000, 195000, 210000, 225000, 240000, 280000, 320000],
+      name: "Released",
+      data: [3, 2, 2],
+    },
+    {
+      name: "In Progress",
+      data: [0, 2, 0],
+    },
+    {
+      name: "Pending",
+      data: [0, 1, 0],
+    },
+    {
+      name: "Rejected",
+      data: [0, 0, 1],
     },
   ],
-  insight: "Revenue increased by 167% throughout the year, with peak performance in Q4.",
+  insight: "Line A has the highest release rate at 100%. Line C had 1 rejected batch requiring investigation.",
 };
 
 const STATS = [
-  { label: "Total Revenue", value: "$1.967M", change: "+23%", icon: TrendingUpIcon, color: "#06a24a" },
-  { label: "Active Products", value: "24", change: "+4", icon: PieChartIcon, color: "#3b82f6" },
-  { label: "Avg. Order Value", value: "$1,245", change: "+12%", icon: BarChartIcon, color: "#8b5cf6" },
-  { label: "Growth Rate", value: "18.5%", change: "+2.3%", icon: TimelineIcon, color: "#f59e0b" },
-];
+  { label: "Total Batches", value: "8", change: "+2", icon: TrendingUpIcon, color: "#06a24a" },
+  { label: "Released", value: "6", change: "+1", icon: PieChartIcon, color: "#3b82f6" },
+  { label: "Equipment Utilization", value: "68%", change: "+5%", icon: BarChartIcon, color: "#8b5cf6" },
+  { label: "Order Fulfillment", value: "75%", change: "+10%", icon: TimelineIcon, color: "#f59e0b" },
+] as const;
+
+const QUICK_ACTIONS = ["Export Report", "Schedule Report", "Share Dashboard", "Create Alert"] as const;
+const DATA_SOURCES = ["Sales Database", "Inventory System", "CRM Analytics", "Financial Reports"] as const;
+const EXAMPLE_QUESTIONS = [
+  "Show batch release status by line",
+  "Display equipment utilization rate",
+  "Show production plan vs actual",
+  "Display order fulfillment rate",
+] as const;
+
+type StatItem = typeof STATS[number];
+
+const StatCard = React.memo(({ stat, index }: { stat: StatItem; index: number }) => (
+  <motion.div
+    initial={{ opacity: 0, y: 20 }}
+    animate={{ opacity: 1, y: 0 }}
+    transition={{ delay: index * 0.1 }}
+  >
+    <Card
+      sx={{
+        height: "100%",
+        background: `linear-gradient(135deg, ${stat.color}10 0%, transparent 100%)`,
+        borderLeft: `4px solid ${stat.color}`,
+      }}
+    >
+      <CardContent>
+        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
+          <Typography variant="body2" color="text.secondary">
+            {stat.label}
+          </Typography>
+          <stat.icon sx={{ color: stat.color, fontSize: 20 }} />
+        </Box>
+        <Typography variant="h4" sx={{ fontWeight: 700, color: "text.primary" }}>
+          {stat.value}
+        </Typography>
+        <Chip
+          size="small"
+          label={stat.change}
+          sx={{
+            mt: 1,
+            backgroundColor: `${stat.color}20`,
+            color: stat.color,
+            fontWeight: 600,
+            fontSize: "0.7rem",
+          }}
+        />
+      </CardContent>
+    </Card>
+  </motion.div>
+));
+
+StatCard.displayName = "StatCard";
+
+const fetcher = async (question: string) => {
+  const response = await fetch("http://localhost:3001/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP error: ${response.status}`);
+  }
+  return response.json();
+};
 
 export default function Home() {
   const theme = useTheme();
@@ -56,7 +165,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (!question.trim()) return;
 
@@ -64,31 +173,19 @@ export default function Home() {
     setError(null);
 
     try {
-      const response = await fetch("http://localhost:3001/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error: ${response.status}`);
-      }
-
-      const data = await response.json();
+      const cacheKey = `chat-${question}`;
+      const data = await mutate(
+        cacheKey,
+        fetcher(question),
+        false
+      );
       setChartData(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
       setLoading(false);
     }
-  };
-
-  const exampleQuestions = [
-    "Show monthly revenue trend",
-    "Compare product sales by category",
-    "Show revenue breakdown by product",
-    "Display customer growth over time",
-  ];
+  }, [question]);
 
   return (
     <Box sx={{ minHeight: "100vh", backgroundColor: "background.default" }}>
@@ -98,43 +195,8 @@ export default function Home() {
         {/* Stats Grid */}
         <Grid container spacing={3} sx={{ mb: 4 }}>
           {STATS.map((stat, index) => (
-            <Grid size={{ xs: 6, md: 3 }} key={index}>
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.1 }}
-              >
-                <Card
-                  sx={{
-                    height: "100%",
-                    background: `linear-gradient(135deg, ${stat.color}10 0%, transparent 100%)`,
-                    borderLeft: `4px solid ${stat.color}`,
-                  }}
-                >
-                  <CardContent>
-                    <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mb: 1 }}>
-                      <Typography variant="body2" color="text.secondary">
-                        {stat.label}
-                      </Typography>
-                      <stat.icon sx={{ color: stat.color, fontSize: 20 }} />
-                    </Box>
-                    <Typography variant="h4" sx={{ fontWeight: 700, color: "text.primary" }}>
-                      {stat.value}
-                    </Typography>
-                    <Chip
-                      size="small"
-                      label={stat.change}
-                      sx={{
-                        mt: 1,
-                        backgroundColor: `${stat.color}20`,
-                        color: stat.color,
-                        fontWeight: 600,
-                        fontSize: "0.7rem",
-                      }}
-                    />
-                  </CardContent>
-                </Card>
-              </motion.div>
+            <Grid size={{ xs: 6, md: 3 }} key={stat.label}>
+              <StatCard stat={stat} index={index} />
             </Grid>
           ))}
         </Grid>
@@ -180,7 +242,7 @@ export default function Home() {
                   </Box>
 
                   <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-                    {exampleQuestions.map((eq, index) => (
+                    {EXAMPLE_QUESTIONS.map((eq, index) => (
                       <Chip
                         key={index}
                         label={eq}
@@ -199,7 +261,7 @@ export default function Home() {
                   </Box>
                 </Box>
 
-                {error && (
+                {error ? (
                   <Paper
                     sx={{
                       p: 2,
@@ -211,7 +273,7 @@ export default function Home() {
                   >
                     <Typography color="error">{error}</Typography>
                   </Paper>
-                )}
+                ) : null}
 
                 {/* Chart Display */}
                 <ChartRenderer data={chartData || MOCK_CHART} />
@@ -231,8 +293,7 @@ export default function Home() {
                   Quick Actions
                 </Typography>
                 <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-                  {["Export Report", "Schedule Report", "Share Dashboard", "Create Alert"].map(
-                    (action, i) => (
+                  {QUICK_ACTIONS.map((action, i) => (
                       <Button
                         key={i}
                         variant="outlined"
@@ -260,8 +321,7 @@ export default function Home() {
                   Data Sources
                 </Typography>
                 <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-                  {["Sales Database", "Inventory System", "CRM Analytics", "Financial Reports"].map(
-                    (source, i) => (
+                  {DATA_SOURCES.map((source, i) => (
                       <Box
                         key={i}
                         sx={{

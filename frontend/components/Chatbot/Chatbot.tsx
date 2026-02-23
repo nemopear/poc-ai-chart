@@ -1,26 +1,43 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
-import {
-  Box,
-  IconButton,
-  Paper,
-  Typography,
-  TextField,
-  Button,
-  Tooltip,
-  useTheme,
-  useMediaQuery,
-} from "@mui/material";
-import { motion, AnimatePresence } from "framer-motion";
 import ChatIcon from "@mui/icons-material/Chat";
-import MinimizeIcon from "@mui/icons-material/Minimize";
+import CloseIcon from "@mui/icons-material/Close";
 import FullscreenIcon from "@mui/icons-material/Fullscreen";
 import FullscreenExitIcon from "@mui/icons-material/FullscreenExit";
-import CloseIcon from "@mui/icons-material/Close";
+import MinimizeIcon from "@mui/icons-material/Minimize";
 import SendIcon from "@mui/icons-material/Send";
-import { ChartData } from "../ChartRenderer";
-import ChartRenderer from "../ChartRenderer";
+import {
+  Box,
+  Button,
+  IconButton,
+  Paper,
+  TextField,
+  Tooltip,
+  Typography,
+  useMediaQuery,
+  useTheme,
+} from "@mui/material";
+import { AnimatePresence, motion } from "framer-motion";
+import dynamic from "next/dynamic";
+import React, { useEffect, useRef, useState, useCallback } from "react";
+import { mutate } from "swr";
+
+const ChartRenderer = dynamic(() => import("../ChartRenderer"), {
+  ssr: false,
+});
+
+interface ChartData {
+  chartType: string;
+  title: string;
+  xAxis?: { label: string; data: string[] | number[] };
+  yAxis?: { label: string };
+  series?: Array<{ name: string; data: number[] }>;
+  data?: Array<{ name: string; value: number }>;
+  columns?: string[];
+  rows?: string[][];
+  insight: string;
+  error?: string;
+}
 
 interface Message {
   id: string;
@@ -33,11 +50,23 @@ interface Message {
 type ChatMode = "compact" | "expanded" | "fullscreen";
 
 const EXAMPLE_QUESTIONS = [
-  "Show monthly revenue trend",
-  "Compare product sales by category",
-  "Show revenue breakdown by product",
-  "Display customer growth over time",
-];
+  "Show batch release status by line",
+  "Display equipment utilization rate",
+  "Show production plan vs actual",
+  "Display order fulfillment rate",
+] as const;
+
+const chatFetcher = async (question: string) => {
+  const response = await fetch("http://localhost:3001/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP error: ${response.status}`);
+  }
+  return response.json();
+};
 
 export default function Chatbot() {
   const theme = useTheme();
@@ -49,7 +78,7 @@ export default function Chatbot() {
     {
       id: "welcome",
       role: "assistant",
-      content: "Hello! I'm your AI data visualization assistant. Ask me anything about your data and I'll generate interactive charts for you.",
+      content: "Hello! I'm your MES Analytics Assistant for Electronic Batch Release. Ask me about production batches, equipment utilization, plan vs actual, or order fulfillment.",
       timestamp: new Date(),
     },
   ]);
@@ -61,7 +90,7 @@ export default function Chatbot() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSend = async () => {
+  const handleSend = useCallback(async () => {
     if (!input.trim() || isLoading) return;
 
     const userMessage: Message = {
@@ -76,13 +105,8 @@ export default function Chatbot() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("http://localhost:3001/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: input }),
-      });
-
-      const data = await response.json();
+      const cacheKey = `chat-${input}`;
+      const data = await mutate(cacheKey, chatFetcher(input), false);
 
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -104,7 +128,7 @@ export default function Chatbot() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [input]);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -291,7 +315,11 @@ export default function Chatbot() {
                       </Typography>
                       {msg.chartData && (
                         <Box sx={{ mt: 2 }}>
-                          <ChartRenderer data={msg.chartData} />
+                          <ChartRenderer 
+                            data={msg.chartData} 
+                            key={`${msg.id}-${chatMode}`}
+                            showExportButton={true}
+                          />
                         </Box>
                       )}
                       <Typography
@@ -310,36 +338,52 @@ export default function Chatbot() {
 
                 {isLoading && (
                   <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
                     style={{ display: "flex", justifyContent: "flex-start" }}
                   >
                     <Box
                       sx={{
-                        px: 2,
-                        py: 1,
+                        px: 3,
+                        py: 2,
                         borderRadius: 2,
                         backgroundColor: isDark ? "grey.800" : "white",
+                        boxShadow: 1,
                       }}
                     >
-                      <Box sx={{ display: "flex", gap: 0.5 }}>
-                        {[0, 1, 2].map((i) => (
-                          <motion.div
-                            key={i}
-                            animate={{ opacity: [0.3, 1, 0.3] }}
-                            transition={{
-                              duration: 1,
-                              repeat: Infinity,
-                              delay: i * 0.2,
-                            }}
-                            style={{
-                              width: 8,
-                              height: 8,
-                              borderRadius: "50%",
-                              backgroundColor: "primary.main",
-                            }}
-                          />
-                        ))}
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                        <Box sx={{ display: "flex", gap: 0.5 }}>
+                          {[0, 1, 2].map((i) => (
+                            <motion.div
+                              key={i}
+                              animate={{ 
+                                y: [0, -6, 0],
+                                opacity: [0.5, 1, 0.5]
+                              }}
+                              transition={{
+                                duration: 0.6,
+                                repeat: Infinity,
+                                delay: i * 0.15,
+                              }}
+                              style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: "50%",
+                                backgroundColor: "#06a24a",
+                              }}
+                            />
+                          ))}
+                        </Box>
+                        <Typography 
+                          variant="caption" 
+                          sx={{ 
+                            color: "text.secondary",
+                            fontWeight: 500,
+                            minWidth: 60
+                          }}
+                        >
+                          Processing...
+                        </Typography>
                       </Box>
                     </Box>
                   </motion.div>
