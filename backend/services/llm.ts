@@ -44,6 +44,105 @@ function loadSystemPrompt(): string {
   return "";
 }
 
+export async function callLLaMAStream(
+  dbResultJson: string,
+  markdownContent: string,
+  userQuestion: string
+): Promise<ReadableStream<Uint8Array>> {
+  const systemPrompt = loadSystemPrompt();
+  
+  const runtimePrompt = `You must respond with ONLY valid JSON, no other text.
+
+INTERNAL DATA CONTEXT:
+${dbResultJson}
+
+BUSINESS DEFINITIONS:
+${markdownContent}
+
+USER QUESTION:
+${userQuestion}
+
+${systemPrompt}
+
+Respond with ONLY valid JSON in this exact format:
+{"chartType":"line|bar|pie|area|table","title":"...","xAxis":{"label":"...","data":[...]},"yAxis":{"label":"..."},"series":[{"name":"...","data":[...]}],"insight":"..."}`;
+
+  const requestBody: OllamaRequest = {
+    model: MODEL_NAME,
+    prompt: runtimePrompt,
+    stream: true,
+    format: "json",
+  };
+
+  const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    const errorStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ error: `Ollama API error: ${response.status} - ${errorBody}` })));
+        controller.close();
+      }
+    });
+    return errorStream;
+  }
+
+  if (!response.body) {
+    const errorStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ error: "No response body" })));
+        controller.close();
+      }
+    });
+    return errorStream;
+  }
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (line.trim()) {
+              try {
+                const parsed = JSON.parse(line);
+                if (parsed.response) {
+                  controller.enqueue(new TextEncoder().encode(parsed.response));
+                }
+                if (parsed.done) {
+                  controller.close();
+                  return;
+                }
+              } catch {
+                // Skip invalid JSON lines
+              }
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+        controller.close();
+      }
+    }
+  });
+}
+
 export async function callLLaMA(
   dbResultJson: string,
   markdownContent: string,
@@ -87,7 +186,7 @@ Respond with ONLY valid JSON in this exact format:
       throw new Error(`Ollama API error: ${response.status}`);
     }
 
-    const data: OllamaResponse = await response.json();
+    const data = await response.json() as OllamaResponse;
     
     try {
       const parsed = JSON.parse(data.response);

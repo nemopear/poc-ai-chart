@@ -19,7 +19,7 @@ import {
 } from "@mui/material";
 import { AnimatePresence, motion } from "framer-motion";
 import dynamic from "next/dynamic";
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { mutate } from "swr";
 
 const ChartRenderer = dynamic(() => import("../ChartRenderer"), {
@@ -49,6 +49,8 @@ interface Message {
 
 type ChatMode = "compact" | "expanded" | "fullscreen";
 
+const API_URL = "http://localhost:3001";
+
 const EXAMPLE_QUESTIONS = [
   "Show batch release status by line",
   "Display equipment utilization rate",
@@ -56,16 +58,69 @@ const EXAMPLE_QUESTIONS = [
   "Display order fulfillment rate",
 ] as const;
 
-const chatFetcher = async (question: string) => {
-  const response = await fetch("http://localhost:3001/api/chat", {
+const chatFetcher = async (question: string, useMock: boolean = false) => {
+  const response = await fetch(`${API_URL}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, stream: false, mock: useMock }),
   });
   if (!response.ok) {
     throw new Error(`HTTP error: ${response.status}`);
   }
   return response.json();
+};
+
+const chatFetcherStream = async (question: string, onChunk: (text: string) => void, onComplete: (data: ChartData) => void, useMock: boolean = false) => {
+  const response = await fetch(`${API_URL}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, stream: true, mock: useMock }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP error: ${response.status}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error("No response body");
+  }
+
+  const decoder = new TextDecoder();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n");
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const data = line.slice(6);
+          if (data === "[DONE]") {
+            return;
+          }
+          
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === "chunk" && parsed.content) {
+              onChunk(parsed.content);
+            } else if (parsed.type === "complete" && parsed.data) {
+              onComplete(parsed.data as ChartData);
+            } else if (parsed.type === "error") {
+              throw new Error(parsed.error);
+            }
+          } catch {
+            // Skip
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 };
 
 export default function Chatbot() {
@@ -74,11 +129,13 @@ export default function Chatbot() {
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const [chatMode, setChatMode] = useState<ChatMode>("compact");
   const [isHovered, setIsHovered] = useState(false);
+  const [useMock, setUseMock] = useState(true);
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
       role: "assistant",
-      content: "Hello! I'm your MES Analytics Assistant for Electronic Batch Release. Ask me about production batches, equipment utilization, plan vs actual, or order fulfillment.",
+      content:
+        "Hello! I'm your MES Analytics Assistant for Electronic Batch Release. Ask me about production batches, equipment utilization, plan vs actual, or order fulfillment.",
       timestamp: new Date(),
     },
   ]);
@@ -104,19 +161,46 @@ export default function Chatbot() {
     setInput("");
     setIsLoading(true);
 
+    let assistantMessageId: string | null = null;
+
     try {
       const cacheKey = `chat-${input}`;
-      const data = await mutate(cacheKey, chatFetcher(input), false);
-
+      
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: data.insight || "Here's your chart:",
-        chartData: data,
+        content: "",
+        chartData: undefined,
         timestamp: new Date(),
       };
 
+      assistantMessageId = assistantMessage.id;
       setMessages((prev) => [...prev, assistantMessage]);
+
+      await new Promise<void>((resolve, reject) => {
+        chatFetcherStream(
+          input,
+          (text) => {
+            setMessages((prev) => 
+              prev.map((msg) => 
+                msg.id === assistantMessageId 
+                  ? { ...msg, content: msg.content + text }
+                  : msg
+              )
+            );
+          },
+          (data) => {
+            setMessages((prev) => 
+              prev.map((msg) => 
+                msg.id === assistantMessageId 
+                  ? { ...msg, chartData: data }
+                  : msg
+              )
+            );
+          },
+          useMock
+        ).then(() => resolve()).catch(reject);
+      });
     } catch (error) {
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -128,7 +212,7 @@ export default function Chatbot() {
     } finally {
       setIsLoading(false);
     }
-  }, [input]);
+  }, [input, useMock]);
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -138,7 +222,8 @@ export default function Chatbot() {
   };
 
   const cycleMode = () => {
-    if (chatMode === "compact") setChatMode(isMobile ? "fullscreen" : "expanded");
+    if (chatMode === "compact")
+      setChatMode(isMobile ? "fullscreen" : "expanded");
     else if (chatMode === "expanded") setChatMode("fullscreen");
     else setChatMode("compact");
   };
@@ -242,15 +327,37 @@ export default function Chatbot() {
               >
                 <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                   <ChatIcon />
-                  <Typography variant="h6" sx={{ fontWeight: 600, fontSize: "1rem" }}>
+                  <Typography
+                    variant="h6"
+                    sx={{ fontWeight: 600, fontSize: "1rem" }}
+                  >
                     AI Assistant
                   </Typography>
                 </Box>
                 <Box sx={{ display: "flex", gap: 0.5 }}>
+                  <Tooltip title={useMock ? "Mock Data (Demo)" : "Real LLM"}>
+                    <Button
+                      size="small"
+                      onClick={() => setUseMock(!useMock)}
+                      sx={{
+                        color: "white",
+                        fontSize: "0.7rem",
+                        minWidth: "auto",
+                        px: 1,
+                        backgroundColor: useMock ? "rgba(255,255,255,0.2)" : "transparent",
+                        "&:hover": { backgroundColor: "rgba(255,255,255,0.15)" },
+                      }}
+                    >
+                      {useMock ? "DEMO" : "LLM"}
+                    </Button>
+                  </Tooltip>
                   <IconButton
                     size="small"
                     onClick={cycleMode}
-                    sx={{ color: "white", "&:hover": { backgroundColor: "rgba(255,255,255,0.1)" } }}
+                    sx={{
+                      color: "white",
+                      "&:hover": { backgroundColor: "rgba(255,255,255,0.1)" },
+                    }}
                   >
                     {chatMode === "fullscreen" ? (
                       <FullscreenExitIcon fontSize="small" />
@@ -261,7 +368,10 @@ export default function Chatbot() {
                   <IconButton
                     size="small"
                     onClick={() => setChatMode("compact")}
-                    sx={{ color: "white", "&:hover": { backgroundColor: "rgba(255,255,255,0.1)" } }}
+                    sx={{
+                      color: "white",
+                      "&:hover": { backgroundColor: "rgba(255,255,255,0.1)" },
+                    }}
                   >
                     {chatMode === "fullscreen" ? (
                       <MinimizeIcon fontSize="small" />
@@ -291,7 +401,8 @@ export default function Chatbot() {
                     animate={{ opacity: 1, y: 0 }}
                     style={{
                       display: "flex",
-                      justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
+                      justifyContent:
+                        msg.role === "user" ? "flex-end" : "flex-start",
                     }}
                   >
                     <Box
@@ -310,27 +421,36 @@ export default function Chatbot() {
                         boxShadow: msg.role === "assistant" ? 1 : "none",
                       }}
                     >
-                      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+                      <Typography
+                        variant="body2"
+                        sx={{ whiteSpace: "pre-wrap" }}
+                      >
                         {msg.content}
                       </Typography>
                       {msg.chartData && (
                         <Box sx={{ mt: 2 }}>
-                          <ChartRenderer 
-                            data={msg.chartData} 
+                          <ChartRenderer
+                            data={msg.chartData}
                             key={`${msg.id}-${chatMode}`}
                             showExportButton={true}
                           />
                         </Box>
                       )}
+
+                      {/* To do: Add md &  table case */}
                       <Typography
                         variant="caption"
                         sx={{
                           display: "block",
                           mt: msg.chartData ? 1 : 0.5,
                           opacity: 0.6,
-                          textAlign: msg.role === "user" ? "right" : "left",                        }}
+                          textAlign: msg.role === "user" ? "right" : "left",
+                        }}
                       >
-                        {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        {msg.timestamp.toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
                       </Typography>
                     </Box>
                   </motion.div>
@@ -351,14 +471,16 @@ export default function Chatbot() {
                         boxShadow: 1,
                       }}
                     >
-                      <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+                      <Box
+                        sx={{ display: "flex", alignItems: "center", gap: 1.5 }}
+                      >
                         <Box sx={{ display: "flex", gap: 0.5 }}>
                           {[0, 1, 2].map((i) => (
                             <motion.div
                               key={i}
-                              animate={{ 
+                              animate={{
                                 y: [0, -6, 0],
-                                opacity: [0.5, 1, 0.5]
+                                opacity: [0.5, 1, 0.5],
                               }}
                               transition={{
                                 duration: 0.6,
@@ -374,15 +496,15 @@ export default function Chatbot() {
                             />
                           ))}
                         </Box>
-                        <Typography 
-                          variant="caption" 
-                          sx={{ 
+                        <Typography
+                          variant="caption"
+                          sx={{
                             color: "text.secondary",
                             fontWeight: 500,
-                            minWidth: 60
+                            minWidth: 60,
                           }}
                         >
-                          Processing...
+                          AI thinking...
                         </Typography>
                       </Box>
                     </Box>
@@ -395,7 +517,11 @@ export default function Chatbot() {
               {/* Quick Questions */}
               {messages.length === 1 && (
                 <Box sx={{ px: 2, pb: 1 }}>
-                  <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: "block" }}>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ mb: 1, display: "block" }}
+                  >
                     Try asking:
                   </Typography>
                   <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
@@ -460,7 +586,9 @@ export default function Chatbot() {
                       backgroundColor: "primary.main",
                       color: "white",
                       "&:hover": { backgroundColor: "primary.dark" },
-                      "&:disabled": { backgroundColor: "action.disabledBackground" },
+                      "&:disabled": {
+                        backgroundColor: "action.disabledBackground",
+                      },
                     }}
                   >
                     <SendIcon />
